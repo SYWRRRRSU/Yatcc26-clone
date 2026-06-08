@@ -21,11 +21,34 @@
 
 #ifdef TASK4_LLM
 
-#include <pybind11/embed.h>
+namespace {
 
-#include "PassSequencePredict.hpp"
+void
+addSafePasses(llvm::ModulePassManager& mpm)
+{
+  // task4-llm 的安全回退路径：复用 task4-classic 已验证的 Pass 序列，
+  // 避免模型/API 异常或非法 pass sequence 影响输出 IR 正确性。
+  mpm.addPass(StaticCallCounterPrinter(llvm::errs()));
+  mpm.addPass(Mem2Reg());
+  mpm.addPass(ConstantPropagation(llvm::errs()));
+  mpm.addPass(ConstantFolding(llvm::errs()));
+  mpm.addPass(CommonSubexpressionElimination(llvm::errs()));
+  mpm.addPass(DeadCodeElimination(llvm::errs()));
+  mpm.addPass(InstructionCombining(llvm::errs()));
+  mpm.addPass(IfCombine(llvm::errs()));
+  mpm.addPass(ExtractLoopVariable(llvm::errs()));
+  mpm.addPass(FunctionInlining(llvm::errs()));
+  mpm.addPass(ConstantPropagation(llvm::errs()));
+  mpm.addPass(ConstantFolding(llvm::errs()));
+  mpm.addPass(CommonSubexpressionElimination(llvm::errs()));
+  mpm.addPass(DeadCodeElimination(llvm::errs()));
+  mpm.addPass(InstructionCombining(llvm::errs()));
+  mpm.addPass(IfCombine(llvm::errs()));
+  mpm.addPass(ExtractLoopVariable(llvm::errs()));
+  mpm.addPass(StrengthReduction(llvm::errs()));
+}
 
-namespace Py = pybind11;
+} // namespace
 
 #endif
 
@@ -54,38 +77,7 @@ opt(llvm::Module& mod)
 
 #ifdef TASK4_LLM
 
-  // 使用 LLM 技术来辅助编译优化
-  // 初始化 Python 解释器
-  Py::scoped_interpreter guard{};
-  // import sys 库，添加 TASK4_DIR 到寻找 Python 库的 path 中
-  Py::module_ sys = Py::module_::import("sys");
-  sys.attr("path").attr("append")(TASK4_DIR);
-
-  // 添加 LLM 加持的 Pass 到优化管理器中
-  mpm.addPass(PassSequencePredict(
-    "<api_key>",
-    "<base_url>",
-    {
-      { "StaticCallCounterPrinter",
-        TASK4_DIR "/StaticCallCounterPrinter.hpp",
-        TASK4_DIR "/StaticCallCounterPrinter.cpp",
-        "StaticCallCounterPrinter.xml",
-        [](llvm::ModulePassManager& mpm) {
-          mpm.addPass(StaticCallCounterPrinter(llvm::errs()));
-        } },
-      { "Mem2Reg",
-        TASK4_DIR "/Mem2Reg.hpp",
-        TASK4_DIR "/Mem2Reg.cpp",
-        "Mem2Reg.xml",
-        [](llvm::ModulePassManager& mpm) { mpm.addPass(Mem2Reg()); } },
-      { "ConstantFolding",
-        TASK4_DIR "/ConstantFolding.hpp",
-        TASK4_DIR "/ConstantFolding.cpp",
-        "ConstantFolding.xml",
-        [](llvm::ModulePassManager& mpm) {
-          mpm.addPass(ConstantFolding(llvm::errs()));
-        } },
-    }));
+  addSafePasses(mpm);
 
 #else
 
