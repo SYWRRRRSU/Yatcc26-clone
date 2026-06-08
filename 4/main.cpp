@@ -26,26 +26,16 @@ namespace {
 void
 addSafePasses(llvm::ModulePassManager& mpm)
 {
-  // task4-llm 的安全回退路径：复用 task4-classic 已验证的 Pass 序列，
-  // 避免模型/API 异常或非法 pass sequence 影响输出 IR 正确性。
-  mpm.addPass(StaticCallCounterPrinter(llvm::errs()));
+  // task4-llm 的保守安全路径：只运行局部、低风险优化，避免 fft 被
+  // CFG/循环/内联等较激进 Pass 错误改写。
   mpm.addPass(Mem2Reg());
   mpm.addPass(ConstantPropagation(llvm::errs()));
   mpm.addPass(ConstantFolding(llvm::errs()));
-  mpm.addPass(CommonSubexpressionElimination(llvm::errs()));
   mpm.addPass(DeadCodeElimination(llvm::errs()));
-  mpm.addPass(InstructionCombining(llvm::errs()));
-  mpm.addPass(IfCombine(llvm::errs()));
-  mpm.addPass(ExtractLoopVariable(llvm::errs()));
-  mpm.addPass(FunctionInlining(llvm::errs()));
+  mpm.addPass(Mem2Reg());
   mpm.addPass(ConstantPropagation(llvm::errs()));
   mpm.addPass(ConstantFolding(llvm::errs()));
-  mpm.addPass(CommonSubexpressionElimination(llvm::errs()));
   mpm.addPass(DeadCodeElimination(llvm::errs()));
-  mpm.addPass(InstructionCombining(llvm::errs()));
-  mpm.addPass(IfCombine(llvm::errs()));
-  mpm.addPass(ExtractLoopVariable(llvm::errs()));
-  mpm.addPass(StrengthReduction(llvm::errs()));
 }
 
 } // namespace
