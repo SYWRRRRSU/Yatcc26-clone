@@ -1,6 +1,5 @@
 #include "InstructionCombining.hpp"
 #include "llvm/IR/Instructions.h"
-#include <algorithm>
 #include <unordered_set>
 #include <vector>
 
@@ -10,6 +9,7 @@ PreservedAnalyses
 InstructionCombining::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int combined = 0;
+  bool changed = false;
   std::unordered_set<Instruction*> toEraseSet;
 
   for (auto& func : mod) {
@@ -45,15 +45,12 @@ InstructionCombining::run(Module& mod, ModuleAnalysisManager& mam)
             Value* userOp0 = userInst->getOperand(0);
             Value* userOp1 = userInst->getOperand(1);
             ConstantInt* userConst = nullptr;
-            Value* nonConstOperand = nullptr;
 
             // 确定使用者指令中的常数操作数
             if (userOp0 == binOp) {
               userConst = dyn_cast<ConstantInt>(userOp1);
-              nonConstOperand = userOp1;
             } else if (userOp1 == binOp) {
               userConst = dyn_cast<ConstantInt>(userOp0);
-              nonConstOperand = userOp0;
             }
             if (!userConst)
               continue;
@@ -85,6 +82,7 @@ InstructionCombining::run(Module& mod, ModuleAnalysisManager& mam)
             toEraseSet.insert(userInst);
             toEraseSet.insert(binOp);
             combined++;
+            changed = true;
           }
         }
       }
@@ -95,5 +93,6 @@ InstructionCombining::run(Module& mod, ModuleAnalysisManager& mam)
     }
   }
 
-  return PreservedAnalyses::all();
+  mOut << "InstructionCombining merged " << combined << " instructions\n";
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
