@@ -50,7 +50,17 @@ StrengthReduction::run(Module& mod, ModuleAnalysisManager& mam)
                 if (!isIntegerType(lhs))
                   break;
                 uint64_t value = constRhs->getSExtValue();
-                if (isPowerOf2(value)) {
+                if (value == 0) {
+                  binOp->replaceAllUsesWith(ConstantInt::get(binOp->getType(), 0));
+                  instToErase.push_back(binOp);
+                  ++strengthReductionTimes;
+                  changed = true;
+                } else if (value == 1) {
+                  binOp->replaceAllUsesWith(lhs);
+                  instToErase.push_back(binOp);
+                  ++strengthReductionTimes;
+                  changed = true;
+                } else if (isPowerOf2(value)) {
                   unsigned shift = Log2_64(value);
                   auto* newInst = BinaryOperator::CreateShl(
                     lhs, ConstantInt::get(binOp->getType(), shift), "", binOp);
@@ -63,7 +73,17 @@ StrengthReduction::run(Module& mod, ModuleAnalysisManager& mam)
                 if (!isIntegerType(rhs))
                   break;
                 uint64_t value = constLhs->getSExtValue();
-                if (isPowerOf2(value)) {
+                if (value == 0) {
+                  binOp->replaceAllUsesWith(ConstantInt::get(binOp->getType(), 0));
+                  instToErase.push_back(binOp);
+                  ++strengthReductionTimes;
+                  changed = true;
+                } else if (value == 1) {
+                  binOp->replaceAllUsesWith(rhs);
+                  instToErase.push_back(binOp);
+                  ++strengthReductionTimes;
+                  changed = true;
+                } else if (isPowerOf2(value)) {
                   unsigned shift = Log2_64(value);
                   auto* newInst = BinaryOperator::CreateShl(
                     rhs, ConstantInt::get(binOp->getType(), shift), "", binOp);
@@ -80,7 +100,12 @@ StrengthReduction::run(Module& mod, ModuleAnalysisManager& mam)
                 if (!isIntegerType(lhs))
                   break;
                 uint64_t value = constRhs->getSExtValue();
-                if (isPowerOf2(value)) {
+                if (value == 1) {
+                  binOp->replaceAllUsesWith(lhs);
+                  instToErase.push_back(binOp);
+                  ++strengthReductionTimes;
+                  changed = true;
+                } else if (isPowerOf2(value)) {
                   unsigned shift = Log2_64(value);
                   auto* newInst = BinaryOperator::CreateLShr(
                     lhs, ConstantInt::get(binOp->getType(), shift), "", binOp);
@@ -97,7 +122,12 @@ StrengthReduction::run(Module& mod, ModuleAnalysisManager& mam)
                 if (!isIntegerType(lhs))
                   break;
                 uint64_t value = constRhs->getSExtValue();
-                if (isPowerOf2(value)) {
+                if (value == 1) {
+                  binOp->replaceAllUsesWith(ConstantInt::get(binOp->getType(), 0));
+                  instToErase.push_back(binOp);
+                  ++strengthReductionTimes;
+                  changed = true;
+                } else if (isPowerOf2(value)) {
                   auto* mask = ConstantInt::get(binOp->getType(), value - 1);
                   auto* newInst =
                     BinaryOperator::CreateAnd(lhs, mask, "", binOp);
