@@ -1,0 +1,74 @@
+\section{实验过程}
+
+\subsection{实验目标}
+
+本次实验的目标是在 LLVM IR 层面对中间代码进行优化，在保证程序语义不变的前提下减少冗余指令、降低不必要的内存访问和重复计算，从而提升生成代码的运行性能。实验输入为前序任务或编译器前端生成的 LLVM IR，输出仍为文本形式的 LLVM IR 文件。优化器需要读取输入模块，运行若干自定义 Analysis Pass 和 Transform Pass，最后输出通过 LLVM verifier 检查、且与原程序语义一致的 IR。
+
+Task4 中同时包含传统优化分支 task4\_classic 和 LLM 分支 task4\_llm。传统分支主要用于实现和验证手写优化 Pass 的能力，目标是在尽量提高性能的同时保持所有测例正确通过。LLM 分支原本用于探索由模型辅助选择 Pass 顺序的方案，但在实际调试中发现，如果直接依赖不稳定的预测序列，容易在复杂测例上产生错误优化。因此最终版本中，LLM 分支采用了更保守的 safe fallback Pass 序列，以优先保证 fft 和 mm 两个性能测例稳定通过。
+
+\subsection{整体设计}
+
+优化器的整体结构基于 LLVM 新 PassManager。程序入口位于 \texttt{main.cpp}，其主要流程包括：解析输入 IR 文件，初始化 \texttt{LoopAnalysisManager}、\texttt{FunctionAnalysisManager}、\texttt{CGSCCAnalysisManager} 和 \texttt{ModuleAnalysisManager}，注册必要的分析 Pass，然后根据编译目标选择不同的优化序列。对于 task4\_classic，程序运行较完整的传统自定义 Pass 序列；对于 task4\_llm，程序运行保守的 safe pass 序列。
+
+实验中实现的优化主要集中在以下几类：一是基于 SSA 和局部数据流的信息传播，例如 \texttt{Mem2Reg}、\texttt{ConstantPropagation} 和 \texttt{ConstantFolding}；二是删除冗余计算或无用指令，例如 \texttt{CommonSubexpressionElimination}、\texttt{DeadCodeElimination} 和 \texttt{InstructionCombining}；三是控制流和循环相关优化，例如 \texttt{IfCombine} 和 \texttt{ExtractLoopVariable}；四是函数层面的简化，例如 \texttt{FunctionInlining}；五是算术强度削弱，例如 \texttt{StrengthReduction}。这些 Pass 均以 Module Pass 的形式接入主优化流程，便于在不同分支中组合使用。
+
+\subsection{传统优化分支实现}
+
+task4\_classic 分支采用传统的自定义 Pass 序列。该分支的设计目标是尽量发挥各个优化 Pass 的作用，因此使用的优化组合相对完整，包含分析输出、SSA 提升、常量传播、常量折叠、公共子表达式消除、死代码删除、指令合并、分支合并、循环不变量外提、函数内联以及强度削弱等步骤。
+
+在 \texttt{main.cpp} 中，classic 分支使用的主要 Pass 包括：
+
+\begin{itemize}
+  \item \texttt{StaticCallCounterPrinter}
+  \item \texttt{Mem2Reg}
+  \item \texttt{ConstantPropagation}
+  \item \texttt{ConstantFolding}
+  \item \texttt{CommonSubexpressionElimination}
+  \item \texttt{DeadCodeElimination}
+  \item \texttt{InstructionCombining}
+  \item \texttt{IfCombine}
+  \item \texttt{ExtractLoopVariable}
+  \item \texttt{FunctionInlining}
+  \item \texttt{StrengthReduction}
+\end{itemize}
+
+该序列并不是只运行一轮优化，而是在前后多次穿插常量传播、常量折叠、公共子表达式消除和死代码删除。这样做的原因是很多优化之间存在相互促进关系：例如 \texttt{Mem2Reg} 将栈变量提升为 SSA 值后，常量传播和公共子表达式消除才能更容易识别冗余；函数内联后可能暴露新的常量折叠和死代码删除机会；指令合并和强度削弱后又可能产生新的无用中间指令，需要再次通过 DCE 清理。最终 classic 分支在保证所有测例通过的基础上取得了较高总分。
+
+\subsection{LLM 分支实现}
+
+task4\_llm 分支最初尝试使用模型辅助选择 Pass 顺序，但实际调试中发现，复杂 IR 上如果 Pass 序列过于激进，可能导致 fft 或 mm 出现运行输出错误。为了保证稳定性，最终版本没有继续依赖 LLMHelper 或 PassSequencePredict 的动态预测，而是在 \texttt{TASK4\_LLM} 条件分支下使用固定的 safe fallback 序列。
+
+LLM 分支最终采用的核心思路是：保留较安全、局部性较强的优化，避免引入容易改变复杂循环、控制流或调用结构的 Pass。基础 safe 序列包括：
+
+\begin{itemize}
+  \item \texttt{Mem2Reg}
+  \item \texttt{ConstantPropagation}
+  \item \texttt{ConstantFolding}
+  \item \texttt{DeadCodeElimination}
+\end{itemize}
+
+在此基础上，当前稳定版本还结合了必要的局部安全优化，例如 \texttt{InstructionCombining}、\texttt{CommonSubexpressionElimination} 和 \texttt{StrengthReduction}。这些 Pass 主要作用于局部表达式、重复计算和简单整数运算，不进行函数内联、循环外提或复杂控制流重写。与 classic 分支相比，task4\_llm 没有使用 \texttt{FunctionInlining}、\texttt{ExtractLoopVariable} 和 \texttt{IfCombine} 等更激进的优化组合，从而降低 fft 被错误优化的风险。该设计使 LLM 分支在 fft 和 mm 上均保持 PASS，虽然总分低于 classic，但稳定性更好。
+
+\subsection{主要优化 Pass 说明}
+
+\texttt{Mem2Reg} 的作用是将可提升的栈上变量转换为 SSA 形式，减少 \texttt{alloca}、\texttt{load} 和 \texttt{store} 带来的内存访问开销。该优化是后续常量传播、公共子表达式消除和死代码删除的重要基础。
+
+\texttt{ConstantPropagation} 主要传播未被修改的全局非数组常量，并在局部场景中对可安全识别的常量值进行替换。\texttt{ConstantFolding} 则针对操作数均为常量的算术指令和比较指令进行折叠，将运行期计算提前转化为编译期结果。这两类 Pass 对 const-propagation、algebraic-identity 等测例有明显帮助。
+
+\texttt{CommonSubexpressionElimination} 用于在同一个 basic block 内消除重复表达式。最终采用的版本支持常见二元运算、比较指令和 \texttt{getelementptr} 指令的局部 CSE，并对 \texttt{add} 和 \texttt{mul} 采用交换律处理。为了保证语义安全，CSE 不跨 basic block，不处理 \texttt{load}，并跳过 \texttt{store}、\texttt{call} 和 terminator。该 Pass 有助于减少 fft 和 mm 中重复地址计算以及普通算术表达式，但对于复杂循环中的内存读写冗余仍然有限。
+
+\texttt{DeadCodeElimination} 负责删除无使用者且无副作用的指令，并清理部分无用 store。该 Pass 在 dead-code-elimination 测例中效果明显，最终该分项达到 100.00。与 DCE 配合使用时，前面的常量折叠、指令合并和强度削弱会产生新的无用临时值，因此 DCE 在序列中多次出现。
+
+\texttt{InstructionCombining} 用于合并连续的常量算术模式，例如连续的加法、减法和乘法常量项，并简化部分安全的比较、类型转换和选择指令。该 Pass 对 instruction-combining 专项测例提升显著，最终该分项达到 100.00，说明局部代数化简和模式匹配在相应场景下具有较好效果。
+
+\texttt{IfCombine} 负责简化常量条件分支和合并简单基本块；\texttt{ExtractLoopVariable} 主要尝试将循环不变量移动到循环外；\texttt{FunctionInlining} 对非递归的小函数进行内联；\texttt{StrengthReduction} 则将部分整数乘除模运算改写为更低成本的移位或按位与操作。最终 hoist、integer-divide-optimization 等测例达到 100.00，也说明循环不变量外提和整数除法相关优化在对应测试中发挥了作用。
+
+\subsection{调试与结果分析}
+
+实验过程中进行了多轮优化尝试。初期重点是调整 Pass 顺序，随后逐步增强 CSE、InstructionCombining、DCE 和局部常量传播等 Pass。调试结果表明，仅调整 Pass 顺序对 fft 的提升比较有限；CSE 和 InstructionCombining 能显著提升部分专项测例，例如 instruction-combining 达到 100.00，但 fft 分数仍保持在 63 左右。这说明 fft 的主要瓶颈很可能不在普通表达式重复或简单代数化简，而在复杂循环、数组下标计算、重复内存读写以及局部数组访问模式方面。由于当前实现没有进行跨 basic block 的 load CSE，也没有完整的别名分析和循环内存优化，因此对 fft 这类以内存访问和循环结构为主的程序提升有限。
+
+最终成绩如下。task4\_classic 总分为 79.90/100.00，全部测例均 PASS。其中 algebraic-identity 为 90.47，const-propagation 为 90.85，crypto 为 95.66，dead-code-elimination 为 100.00，hoist 为 100.00，instruction-combining 为 100.00，integer-divide-optimization 为 100.00，mm 为 78.05，fft 为 63.19。bitset、dead-storage-elimination 和 if-combine 分项仍有提升空间，分别为 49.25、58.43 和 32.88。
+
+task4\_llm 总分为 70.64/100.00，其中 llm-performance/fft 为 63.17，llm-performance/mm 为 78.10，两个测例均 PASS。与 classic 分支相比，LLM 分支分数较低，主要原因是其优化序列更保守，没有启用函数内联、循环外提和复杂控制流优化。这样做牺牲了一部分性能，但避免了 fft 和 mm 在激进优化下出现运行错误。
+
+总体来看，classic 分支采用更完整、更激进的自定义 Pass 组合，因此总体性能更好；LLM 分支则以稳定性为主要目标，通过 safe fallback 序列保证性能测例正确通过。本实验没有完全解决 fft 中复杂数组访问和循环内存优化的问题，但已经在死代码删除、指令合并、循环不变量外提和整数除法优化等方面取得了较明显效果。
