@@ -1,4 +1,6 @@
 #include "ConstantPropagation.hpp"
+#include <llvm/ADT/DenseMap.h>
+#include <llvm/IR/InstrTypes.h>
 #include <unordered_map>
 #include <vector>
 
@@ -56,25 +58,28 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
     // 遍历每个基本块
     for (auto& bb : func) {
       std::vector<Instruction*> instToErase;
-      std::unordered_map<Value*, Constant*> localConstants;
+      DenseMap<Value*, Value*> lastStoredValue;
 
-      // 单基本块内精确指针常量传播。遇到任意可能写内存的未知指令时清空，
-      // 避免跨 alias/call 做不安全替换。
+      // 单 basic block 内精确指针 store-load forwarding。
+      // 只在 pointer Value* 完全相同时转发，遇到未知内存影响则清空状态。
       for (auto& inst : bb) {
         if (auto* load = dyn_cast<LoadInst>(&inst)) {
           if (load->isVolatile() || load->isAtomic()) {
-            localConstants.clear();
+            lastStoredValue.clear();
             continue;
           }
 
           Value* ptr = load->getPointerOperand();
-          if (auto it = localConstants.find(ptr); it != localConstants.end()) {
+          if (auto it = lastStoredValue.find(ptr);
+              it != lastStoredValue.end() &&
+              it->second->getType() == load->getType()) {
             load->replaceAllUsesWith(it->second);
             instToErase.push_back(load);
             ++constFoldTimes;
             changed = true;
           } else if (auto it = globalConstants.find(ptr);
-                     it != globalConstants.end()) {
+                     it != globalConstants.end() &&
+                     it->second->getType() == load->getType()) {
             load->replaceAllUsesWith(it->second);
             instToErase.push_back(load);
             ++constFoldTimes;
@@ -84,19 +89,17 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
         }
 
         if (auto* store = dyn_cast<StoreInst>(&inst)) {
-          localConstants.clear();
-
-          if (store->isVolatile() || store->isAtomic())
+          if (store->isVolatile() || store->isAtomic()) {
+            lastStoredValue.clear();
             continue;
-
-          if (auto* constant = dyn_cast<Constant>(store->getValueOperand())) {
-            localConstants[store->getPointerOperand()] = constant;
           }
+
+          lastStoredValue[store->getPointerOperand()] = store->getValueOperand();
           continue;
         }
 
-        if (inst.mayWriteToMemory()) {
-          localConstants.clear();
+        if (isa<CallBase>(&inst) || inst.mayReadOrWriteMemory()) {
+          lastStoredValue.clear();
         }
       }
 
