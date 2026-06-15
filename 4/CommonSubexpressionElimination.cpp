@@ -1,47 +1,145 @@
 #include "CommonSubexpressionElimination.hpp"
-#include <tuple>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/Operator.h>
+#include <functional>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 using namespace llvm;
 
-namespace std {
-template<>
-struct hash<std::tuple<Instruction::BinaryOps, Value*, Value*>>
+namespace {
+
+void
+hashCombine(std::size_t& seed, std::size_t value)
 {
-  size_t operator()(
-    const std::tuple<Instruction::BinaryOps, Value*, Value*>& key) const
+  seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+
+struct ExpressionKey
+{
+  unsigned opcode = 0;
+  Type* type = nullptr;
+  CmpInst::Predicate predicate = CmpInst::BAD_ICMP_PREDICATE;
+  bool inBounds = false;
+  bool noUnsignedWrap = false;
+  bool noSignedWrap = false;
+  bool exact = false;
+  Type* gepSourceType = nullptr;
+  std::vector<Value*> operands;
+
+  bool operator==(const ExpressionKey& other) const
   {
-    auto& op = std::get<0>(key);
-    auto& a = std::get<1>(key);
-    auto& b = std::get<2>(key);
+    return opcode == other.opcode && type == other.type &&
+           predicate == other.predicate && inBounds == other.inBounds &&
+           noUnsignedWrap == other.noUnsignedWrap &&
+           noSignedWrap == other.noSignedWrap && exact == other.exact &&
+           gepSourceType == other.gepSourceType && operands == other.operands;
+  }
+};
 
-    size_t seed = 0;
-    // Combine操作码
-    seed ^= hash<Instruction::BinaryOps>()(op) + 0x9e3779b9 + (seed << 6) +
-            (seed >> 2);
-    // Combine操作数A
-    seed ^= hash<Value*>()(a) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    // Combine操作数B
-    seed ^= hash<Value*>()(b) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-
+struct ExpressionKeyHash
+{
+  std::size_t operator()(const ExpressionKey& key) const
+  {
+    std::size_t seed = 0;
+    hashCombine(seed, std::hash<unsigned>()(key.opcode));
+    hashCombine(seed, std::hash<Type*>()(key.type));
+    hashCombine(seed, std::hash<int>()(key.predicate));
+    hashCombine(seed, std::hash<bool>()(key.inBounds));
+    hashCombine(seed, std::hash<bool>()(key.noUnsignedWrap));
+    hashCombine(seed, std::hash<bool>()(key.noSignedWrap));
+    hashCombine(seed, std::hash<bool>()(key.exact));
+    hashCombine(seed, std::hash<Type*>()(key.gepSourceType));
+    for (Value* operand : key.operands) {
+      hashCombine(seed, std::hash<Value*>()(operand));
+    }
     return seed;
   }
 };
 
-template<>
-struct equal_to<std::tuple<Instruction::BinaryOps, Value*, Value*>>
+bool
+isSupportedBinaryOpcode(unsigned opcode)
 {
-  bool operator()(
-    const std::tuple<Instruction::BinaryOps, Value*, Value*>& lhs,
-    const std::tuple<Instruction::BinaryOps, Value*, Value*>& rhs) const
-  {
-    return std::get<0>(lhs) == std::get<0>(rhs) &&
-           std::get<1>(lhs) == std::get<1>(rhs) &&
-           std::get<2>(lhs) == std::get<2>(rhs);
+  switch (opcode) {
+    case Instruction::Add:
+    case Instruction::Sub:
+    case Instruction::Mul:
+    case Instruction::Shl:
+    case Instruction::LShr:
+    case Instruction::AShr:
+      return true;
+    default:
+      return false;
   }
-};
-
 }
+
+void
+addOperand(ExpressionKey& key, Value* value)
+{
+  key.operands.push_back(value);
+}
+
+void
+addCommutativeOperands(ExpressionKey& key, Value* lhs, Value* rhs)
+{
+  if (std::less<Value*>()(rhs, lhs)) {
+    key.operands.push_back(rhs);
+    key.operands.push_back(lhs);
+  } else {
+    key.operands.push_back(lhs);
+    key.operands.push_back(rhs);
+  }
+}
+
+bool
+buildExpressionKey(Instruction& inst, ExpressionKey& key)
+{
+  key.opcode = inst.getOpcode();
+  key.type = inst.getType();
+
+  if (auto* binOp = dyn_cast<BinaryOperator>(&inst)) {
+    if (!isSupportedBinaryOpcode(binOp->getOpcode()))
+      return false;
+
+    if (auto* op = dyn_cast<OverflowingBinaryOperator>(binOp)) {
+      key.noUnsignedWrap = op->hasNoUnsignedWrap();
+      key.noSignedWrap = op->hasNoSignedWrap();
+    }
+    if (auto* op = dyn_cast<PossiblyExactOperator>(binOp)) {
+      key.exact = op->isExact();
+    }
+
+    if (binOp->getOpcode() == Instruction::Add ||
+        binOp->getOpcode() == Instruction::Mul) {
+      addCommutativeOperands(key, binOp->getOperand(0), binOp->getOperand(1));
+    } else {
+      addOperand(key, binOp->getOperand(0));
+      addOperand(key, binOp->getOperand(1));
+    }
+    return true;
+  }
+
+  if (auto* cmp = dyn_cast<ICmpInst>(&inst)) {
+    key.predicate = cmp->getPredicate();
+    addOperand(key, cmp->getOperand(0));
+    addOperand(key, cmp->getOperand(1));
+    return true;
+  }
+
+  if (auto* gep = dyn_cast<GetElementPtrInst>(&inst)) {
+    key.inBounds = gep->isInBounds();
+    key.gepSourceType = gep->getSourceElementType();
+    for (Use& operand : gep->operands()) {
+      addOperand(key, operand.get());
+    }
+    return true;
+  }
+
+  return false;
+}
+
+} // namespace
 
 PreservedAnalyses
 CommonSubexpressionElimination::run(Module& mod, ModuleAnalysisManager& mam)
@@ -51,35 +149,25 @@ CommonSubexpressionElimination::run(Module& mod, ModuleAnalysisManager& mam)
 
   for (auto& func : mod) {
     for (auto& bb : func) {
-      // 使用哈希表存储已存在的表达式，键为（操作码，左操作数，右操作数）
-      std::unordered_map<
-        std::tuple<Instruction::BinaryOps, Value*, Value*>,
-        Value*,
-        std::hash<std::tuple<Instruction::BinaryOps, Value*, Value*>>,
-        std::equal_to<std::tuple<Instruction::BinaryOps, Value*, Value*>>>
-        exprMap;
+      std::unordered_map<ExpressionKey, Value*, ExpressionKeyHash> exprMap;
 
       std::vector<Instruction*> instToErase;
 
       for (auto& inst : bb) {
-        // 处理二元运算指令
-        if (auto binOp = dyn_cast<BinaryOperator>(&inst)) {
-          Value* lhs = binOp->getOperand(0);
-          Value* rhs = binOp->getOperand(1);
-          Instruction::BinaryOps op = binOp->getOpcode();
+        if (inst.isTerminator() || isa<LoadInst>(&inst) || isa<StoreInst>(&inst) ||
+            isa<CallBase>(&inst))
+          continue;
 
-          // 生成表达式唯一标识
-          auto key = std::make_tuple(op, lhs, rhs);
+        ExpressionKey key;
+        if (!buildExpressionKey(inst, key))
+          continue;
 
-          // 检查是否已存在相同表达式
-          auto [it, inserted] = exprMap.emplace(key, binOp);
-          if (!inserted) {
-            // 替换所有用户为已存在的计算结果
-            binOp->replaceAllUsesWith(it->second);
-            instToErase.push_back(binOp);
-            ++cseTimes;
-            changed = true;
-          }
+        auto [it, inserted] = exprMap.emplace(std::move(key), &inst);
+        if (!inserted) {
+          inst.replaceAllUsesWith(it->second);
+          instToErase.push_back(&inst);
+          ++cseTimes;
+          changed = true;
         }
       }
 
