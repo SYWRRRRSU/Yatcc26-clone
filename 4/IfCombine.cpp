@@ -6,7 +6,6 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h" // For PreservedAnalyses
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <vector>
 
 using namespace llvm;
@@ -62,29 +61,5 @@ IfCombine::run(Module& mod, ModuleAnalysisManager& mam)
     }
   }
 
-  // 基本块合并,将只有唯一前驱的基本块合并到之前的块中(也就是A无条件跳转到B，B无条件跳转到C)就将三者合并
-
-  for (Function& F : mod) {
-    // 跳过函数声明
-    if (F.isDeclaration())
-      continue;
-
-    std::vector<BasicBlock*> blockToMerge;
-    for (BasicBlock& BB : F) {
-      BranchInst* Br = dyn_cast<BranchInst>(BB.getTerminator());
-      if (!Br || !Br->isUnconditional())
-        continue;
-
-      BasicBlock* Succ = Br->getSuccessor(0);
-      if (Succ && Succ->getSinglePredecessor() == &BB) {
-        // 使用LLVM内置函数合并基本块
-        blockToMerge.push_back(Succ);
-      }
-    }
-
-    for (BasicBlock* block : blockToMerge) {
-      changed |= llvm::MergeBlockIntoPredecessor(block);
-    }
-  }
   return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }

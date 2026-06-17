@@ -6,7 +6,6 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
-#include <llvm/Transforms/Utils/LoopUtils.h>
 #include <vector>
 
 using namespace llvm;
