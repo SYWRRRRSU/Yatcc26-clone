@@ -4,7 +4,7 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/Support/raw_ostream.h>
 
-// 将全局常量进行常量传播
+// 简化常量条件分支，并合并只有唯一前驱的基本块。
 class IfCombine : public llvm::PassInfoMixin<IfCombine>
 {
 public:

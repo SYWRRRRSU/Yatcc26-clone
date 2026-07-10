@@ -1,5 +1,7 @@
 #include "ConstantPropagation.hpp"
 #include <map>
+#include <unordered_map>
+#include <vector>
 
 using namespace llvm;
 
@@ -8,6 +10,7 @@ PreservedAnalyses
 ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int constFoldTimes = 0;
+  bool changed = false;
   std::map<Value*, Constant*> constantValues;
 
   // 1. 预处理：收集所有被Store修改的非数组全局变量
@@ -63,6 +66,7 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
             load->replaceAllUsesWith(it->second);
             instToErase.push_back(load);
             ++constFoldTimes;
+            changed = true;
           }
         }
       }
@@ -73,7 +77,7 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
     }
   }
 
-  mOut << "ConstantFolding running...\nOptimized " << constFoldTimes
+  mOut << "ConstantPropagation running...\nOptimized " << constFoldTimes
        << " instructions\n";
-  return PreservedAnalyses::all();
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
