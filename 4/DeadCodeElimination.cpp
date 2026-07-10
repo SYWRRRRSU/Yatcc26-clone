@@ -1,5 +1,4 @@
 #include "DeadCodeElimination.hpp"
-#include <algorithm>
 #include <unordered_set>
 #include <vector>
 
@@ -9,17 +8,17 @@ PreservedAnalyses
 DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int eliminated = 0;
+  bool changed = false;
 
-  // 收集所有被load过的全局变量
-  std::unordered_set<GlobalVariable*> used_GVs;
+  // 收集所有被 load 过的全局变量，未被读取的全局变量 store 可安全删除。
+  std::unordered_set<GlobalVariable*> usedGVs;
   for (auto& func : mod) {
     for (auto& bb : func) {
       for (auto& inst : bb) {
         if (auto load{ dyn_cast<LoadInst>(&inst) }; load) {
           Value* ptr = load->getPointerOperand();
           if (auto gv = dyn_cast<GlobalVariable>(ptr)) {
-            // 如果被load过就说明是有用的
-            used_GVs.insert(gv);
+            usedGVs.insert(gv);
           }
         }
       }
@@ -27,8 +26,8 @@ DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
   }
 
   mOut << "used_GVs:";
-  for (auto* used_gv : used_GVs) {
-    mOut << used_gv->getName();
+  for (auto* usedGV : usedGVs) {
+    mOut << usedGV->getName();
   }
   mOut << "\n";
 
@@ -37,11 +36,15 @@ DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
     // 遍历所有基本块
     for (BasicBlock& bb : func) {
       std::vector<Instruction*> instToErase;
+      std::unordered_set<Instruction*> instToEraseSet;
 
-      auto IsInInstToErase{ [&instToErase](Instruction* inst) {
-        return std::find(instToErase.cbegin(), instToErase.cend(), inst) !=
-               instToErase.cend();
-      } };
+      auto markForErase = [&](Instruction* inst) {
+        if (instToEraseSet.insert(inst).second) {
+          instToErase.push_back(inst);
+          ++eliminated;
+          changed = true;
+        }
+      };
 
       // 从后往前遍历基本块指令
       for (auto instIt = bb.rbegin(); instIt != bb.rend(); ++instIt) {
@@ -51,34 +54,30 @@ DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
         if (inst.isBinaryOp()) {
           // 检查二元运算符结果有无用户
           if (inst.use_empty()) {
-            instToErase.push_back(&inst);
-            ++eliminated;
+            markForErase(&inst);
             continue;
           } else {
             bool allUsersDeleted = true;
             for (auto* user : inst.users()) {
               if (auto* uInst = dyn_cast<Instruction>(user);
-                  !IsInInstToErase(uInst)) {
+                  !instToEraseSet.count(uInst)) {
                 allUsersDeleted = false;
               }
             }
 
             if (allUsersDeleted) {
-              instToErase.push_back(&inst);
-              ++eliminated;
+              markForErase(&inst);
               continue;
             }
           }
 
-          
-        } else if (auto* store = dyn_cast<StoreInst>(&inst)) { // 检查有没有store指令向未被使用过的全局常量存储东西
+        } else if (auto* store = dyn_cast<StoreInst>(&inst)) {
+          // 删除写入未被读取全局变量的 store。
           Value* ptr{ store->getPointerOperand() };
-          // 如果这个全局变量没被用过的话就清除掉这条store指令
           if (auto* gv{ dyn_cast<GlobalVariable>(ptr) };
-              gv && !used_GVs.count(gv)) {
-            instToErase.push_back(&inst);
+              gv && !usedGVs.count(gv)) {
             mOut << "remove global variable:\t" << gv->getName() << "\n";
-            ++eliminated;
+            markForErase(&inst);
           }
         }
       }
@@ -87,10 +86,10 @@ DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
       for (Instruction* inst : instToErase) {
         mOut << "erase instruction:\t" << inst->getName() << "\n";
         inst->eraseFromParent();
-        eliminated++;
       }
     }
   }
 
-  return PreservedAnalyses::all();
+  mOut << "DeadCodeElimination removed " << eliminated << " instructions\n";
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
