@@ -4,7 +4,7 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/Support/raw_ostream.h>
 
-// 将全局常量进行常量传播
+// 内联非递归的小函数调用，并删除不再使用的内部函数。
 class FunctionInlining : public llvm::PassInfoMixin<FunctionInlining>
 {
 public:

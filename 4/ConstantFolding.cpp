@@ -1,4 +1,5 @@
 #include "ConstantFolding.hpp"
+#include <vector>
 
 using namespace llvm;
 
@@ -189,14 +190,15 @@ ConstantFolding::run(Module& mod, ModuleAnalysisManager& mam)
         }
       }
 
-        // 统一删除被折叠为常量的指令
-        for (auto& i : instToErase)
-          i->eraseFromParent();
-      }
+      // 统一删除被折叠为常量的指令
+      for (auto& i : instToErase)
+        i->eraseFromParent();
     }
+  }
   
 
   mOut << "ConstantFolding running...\nTo eliminate " << constFoldTimes
        << " instructions\n";
-  return PreservedAnalyses::all();
+  return constFoldTimes > 0 ? PreservedAnalyses::none()
+                            : PreservedAnalyses::all();
 }

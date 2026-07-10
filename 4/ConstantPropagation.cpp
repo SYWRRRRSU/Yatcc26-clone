@@ -1,5 +1,8 @@
 #include "ConstantPropagation.hpp"
-#include <map>
+#include <llvm/ADT/DenseMap.h>
+#include <llvm/IR/InstrTypes.h>
+#include <unordered_map>
+#include <vector>
 
 using namespace llvm;
 
@@ -8,7 +11,8 @@ PreservedAnalyses
 ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int constFoldTimes = 0;
-  std::map<Value*, Constant*> constantValues;
+  bool changed = false;
+  std::unordered_map<Value*, Constant*> globalConstants;
 
   // 1. 预处理：收集所有被Store修改的非数组全局变量
   std::unordered_map<GlobalVariable*, bool> modifiedGVs;
@@ -44,7 +48,7 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
       }
 
       if (!(modifiedGVs.count(gv) && modifiedGVs[gv])) {
-        constantValues[gv] = init;
+        globalConstants[gv] = init;
       }
     }
   }
@@ -54,16 +58,48 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
     // 遍历每个基本块
     for (auto& bb : func) {
       std::vector<Instruction*> instToErase;
+      DenseMap<Value*, Value*> lastStoredValue;
 
-      // 处理Load指令的常量传播
+      // 单 basic block 内精确指针 store-load forwarding。
+      // 只在 pointer Value* 完全相同时转发，遇到未知内存影响则清空状态。
       for (auto& inst : bb) {
         if (auto* load = dyn_cast<LoadInst>(&inst)) {
+          if (load->isVolatile() || load->isAtomic()) {
+            lastStoredValue.clear();
+            continue;
+          }
+
           Value* ptr = load->getPointerOperand();
-          if (auto it = constantValues.find(ptr); it != constantValues.end()) {
+          if (auto it = lastStoredValue.find(ptr);
+              it != lastStoredValue.end() &&
+              it->second->getType() == load->getType()) {
             load->replaceAllUsesWith(it->second);
             instToErase.push_back(load);
             ++constFoldTimes;
+            changed = true;
+          } else if (auto it = globalConstants.find(ptr);
+                     it != globalConstants.end() &&
+                     it->second->getType() == load->getType()) {
+            load->replaceAllUsesWith(it->second);
+            instToErase.push_back(load);
+            ++constFoldTimes;
+            changed = true;
           }
+          continue;
+        }
+
+        if (auto* store = dyn_cast<StoreInst>(&inst)) {
+          if (store->isVolatile() || store->isAtomic()) {
+            lastStoredValue.clear();
+            continue;
+          }
+
+          lastStoredValue[store->getPointerOperand()] = store->getValueOperand();
+          continue;
+        }
+
+        if (isa<CallBase>(&inst) || inst.mayReadOrWriteMemory()) {
+          lastStoredValue.clear();
         }
       }
 
@@ -73,7 +109,7 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
     }
   }
 
-  mOut << "ConstantFolding running...\nOptimized " << constFoldTimes
+  mOut << "ConstantPropagation running...\nOptimized " << constFoldTimes
        << " instructions\n";
-  return PreservedAnalyses::all();
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
