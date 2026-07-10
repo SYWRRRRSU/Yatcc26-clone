@@ -1,14 +1,26 @@
 #include "DeadCodeElimination.hpp"
-#include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 using namespace llvm;
 
+namespace {
+
+bool
+canRemoveUnusedInstruction(Instruction& inst)
+{
+  return !inst.isTerminator() && !inst.mayHaveSideEffects() &&
+         !inst.mayReadFromMemory();
+}
+
+} // namespace
+
 PreservedAnalyses
 DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int eliminated = 0;
+  bool changed = false;
 
   // 收集所有被load过的全局变量
   std::unordered_set<GlobalVariable*> used_GVs;
@@ -37,48 +49,72 @@ DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
     // 遍历所有基本块
     for (BasicBlock& bb : func) {
       std::vector<Instruction*> instToErase;
+      std::unordered_set<Instruction*> instToEraseSet;
 
-      auto IsInInstToErase{ [&instToErase](Instruction* inst) {
-        return std::find(instToErase.cbegin(), instToErase.cend(), inst) !=
-               instToErase.cend();
+      auto markForErase{ [&](Instruction* inst) {
+        if (instToEraseSet.insert(inst).second) {
+          instToErase.push_back(inst);
+          ++eliminated;
+          changed = true;
+        }
       } };
+
+      // 删除同一基本块内被后续 store 覆盖、且中间没有内存读写的 store。
+      std::unordered_map<Value*, StoreInst*> lastStore;
+      for (Instruction& inst : bb) {
+        if (auto* store = dyn_cast<StoreInst>(&inst)) {
+          if (store->isVolatile() || store->isAtomic()) {
+            lastStore.clear();
+            continue;
+          }
+
+          Value* ptr = store->getPointerOperand();
+          if (auto it = lastStore.find(ptr); it != lastStore.end()) {
+            markForErase(it->second);
+          }
+
+          lastStore.clear();
+          lastStore[ptr] = store;
+          continue;
+        }
+
+        if (inst.mayReadFromMemory() || inst.mayWriteToMemory()) {
+          lastStore.clear();
+        }
+      }
 
       // 从后往前遍历基本块指令
       for (auto instIt = bb.rbegin(); instIt != bb.rend(); ++instIt) {
         Instruction& inst = *instIt;
 
-        // 检查指令是否没有用户（包括显式和隐式用户）
-        if (inst.isBinaryOp()) {
-          // 检查二元运算符结果有无用户
+        if (canRemoveUnusedInstruction(inst)) {
           if (inst.use_empty()) {
-            instToErase.push_back(&inst);
-            ++eliminated;
+            markForErase(&inst);
             continue;
-          } else {
-            bool allUsersDeleted = true;
-            for (auto* user : inst.users()) {
-              if (auto* uInst = dyn_cast<Instruction>(user);
-                  !IsInInstToErase(uInst)) {
-                allUsersDeleted = false;
-              }
-            }
+          }
 
-            if (allUsersDeleted) {
-              instToErase.push_back(&inst);
-              ++eliminated;
-              continue;
+          bool allUsersDeleted = true;
+          for (auto* user : inst.users()) {
+            auto* uInst = dyn_cast<Instruction>(user);
+            if (!uInst || !instToEraseSet.count(uInst)) {
+              allUsersDeleted = false;
+              break;
             }
           }
 
-          
+          if (allUsersDeleted) {
+            markForErase(&inst);
+            continue;
+          }
+
         } else if (auto* store = dyn_cast<StoreInst>(&inst)) { // 检查有没有store指令向未被使用过的全局常量存储东西
           Value* ptr{ store->getPointerOperand() };
           // 如果这个全局变量没被用过的话就清除掉这条store指令
           if (auto* gv{ dyn_cast<GlobalVariable>(ptr) };
-              gv && !used_GVs.count(gv)) {
-            instToErase.push_back(&inst);
+              gv && !used_GVs.count(gv) && !store->isVolatile() &&
+              !store->isAtomic()) {
             mOut << "remove global variable:\t" << gv->getName() << "\n";
-            ++eliminated;
+            markForErase(&inst);
           }
         }
       }
@@ -87,10 +123,10 @@ DeadCodeElimination::run(Module& mod, ModuleAnalysisManager& mam)
       for (Instruction* inst : instToErase) {
         mOut << "erase instruction:\t" << inst->getName() << "\n";
         inst->eraseFromParent();
-        eliminated++;
       }
     }
   }
 
-  return PreservedAnalyses::all();
+  mOut << "DeadCodeElimination removed " << eliminated << " instructions\n";
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
