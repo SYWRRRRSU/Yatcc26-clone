@@ -4,7 +4,7 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/Support/raw_ostream.h>
 
-// 将全局常量进行常量传播
+// 合并连续加法中的常量项，减少冗余指令。
 class InstructionCombining : public llvm::PassInfoMixin<InstructionCombining>
 {
 public:

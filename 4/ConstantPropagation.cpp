@@ -1,5 +1,6 @@
 #include "ConstantPropagation.hpp"
-#include <map>
+#include <unordered_map>
+#include <vector>
 
 using namespace llvm;
 
@@ -8,7 +9,8 @@ PreservedAnalyses
 ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int constFoldTimes = 0;
-  std::map<Value*, Constant*> constantValues;
+  bool changed = false;
+  std::unordered_map<Value*, Constant*> globalConstants;
 
   // 1. 预处理：收集所有被Store修改的非数组全局变量
   std::unordered_map<GlobalVariable*, bool> modifiedGVs;
@@ -44,7 +46,7 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
       }
 
       if (!(modifiedGVs.count(gv) && modifiedGVs[gv])) {
-        constantValues[gv] = init;
+        globalConstants[gv] = init;
       }
     }
   }
@@ -54,16 +56,47 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
     // 遍历每个基本块
     for (auto& bb : func) {
       std::vector<Instruction*> instToErase;
+      std::unordered_map<Value*, Constant*> localConstants;
 
-      // 处理Load指令的常量传播
+      // 单基本块内精确指针常量传播。遇到任意可能写内存的未知指令时清空，
+      // 避免跨 alias/call 做不安全替换。
       for (auto& inst : bb) {
         if (auto* load = dyn_cast<LoadInst>(&inst)) {
+          if (load->isVolatile() || load->isAtomic()) {
+            localConstants.clear();
+            continue;
+          }
+
           Value* ptr = load->getPointerOperand();
-          if (auto it = constantValues.find(ptr); it != constantValues.end()) {
+          if (auto it = localConstants.find(ptr); it != localConstants.end()) {
             load->replaceAllUsesWith(it->second);
             instToErase.push_back(load);
             ++constFoldTimes;
+            changed = true;
+          } else if (auto it = globalConstants.find(ptr);
+                     it != globalConstants.end()) {
+            load->replaceAllUsesWith(it->second);
+            instToErase.push_back(load);
+            ++constFoldTimes;
+            changed = true;
           }
+          continue;
+        }
+
+        if (auto* store = dyn_cast<StoreInst>(&inst)) {
+          localConstants.clear();
+
+          if (store->isVolatile() || store->isAtomic())
+            continue;
+
+          if (auto* constant = dyn_cast<Constant>(store->getValueOperand())) {
+            localConstants[store->getPointerOperand()] = constant;
+          }
+          continue;
+        }
+
+        if (inst.mayWriteToMemory()) {
+          localConstants.clear();
         }
       }
 
@@ -73,7 +106,7 @@ ConstantPropagation::run(Module& mod, ModuleAnalysisManager& mam)
     }
   }
 
-  mOut << "ConstantFolding running...\nOptimized " << constFoldTimes
+  mOut << "ConstantPropagation running...\nOptimized " << constFoldTimes
        << " instructions\n";
-  return PreservedAnalyses::all();
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }

@@ -4,7 +4,7 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/Support/raw_ostream.h>
 
-// 将全局常量进行常量传播
+// 删除无用的二元运算以及写入未读取全局变量的 store。
 class DeadCodeElimination : public llvm::PassInfoMixin<DeadCodeElimination>
 {
 public:

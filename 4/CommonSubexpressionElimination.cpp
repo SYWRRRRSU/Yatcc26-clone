@@ -1,4 +1,6 @@
 #include "CommonSubexpressionElimination.hpp"
+#include <tuple>
+#include <unordered_map>
 
 using namespace llvm;
 
@@ -45,10 +47,10 @@ PreservedAnalyses
 CommonSubexpressionElimination::run(Module& mod, ModuleAnalysisManager& mam)
 {
   int cseTimes = 0;
+  bool changed = false;
 
   for (auto& func : mod) {
     for (auto& bb : func) {
-        
       // 使用哈希表存储已存在的表达式，键为（操作码，左操作数，右操作数）
       std::unordered_map<
         std::tuple<Instruction::BinaryOps, Value*, Value*>,
@@ -70,14 +72,13 @@ CommonSubexpressionElimination::run(Module& mod, ModuleAnalysisManager& mam)
           auto key = std::make_tuple(op, lhs, rhs);
 
           // 检查是否已存在相同表达式
-          if (exprMap.count(key)) {
+          auto [it, inserted] = exprMap.emplace(key, binOp);
+          if (!inserted) {
             // 替换所有用户为已存在的计算结果
-            binOp->replaceAllUsesWith(exprMap[key]);
+            binOp->replaceAllUsesWith(it->second);
             instToErase.push_back(binOp);
             ++cseTimes;
-          } else {
-            // 记录当前表达式的计算结果
-            exprMap[key] = binOp;
+            changed = true;
           }
         }
       }
@@ -90,5 +91,5 @@ CommonSubexpressionElimination::run(Module& mod, ModuleAnalysisManager& mam)
 
   mOut << "CSE optimization completed. Eliminated " << cseTimes
        << " common subexpressions.\n";
-  return PreservedAnalyses::all();
+  return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
